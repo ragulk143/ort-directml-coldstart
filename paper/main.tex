@@ -13,8 +13,8 @@
 
 \title[Cold-Start vs. Steady-State Inference on Heterogeneous Edge Hardware]{Where Does the Time Go? Cold-Start Pipeline Compilation vs. Steady-State Latency of Vision Models Across CPU, Integrated GPU, and Discrete GPU Execution Providers}
 
-\author*[1]{\fnm{Ragul} \sur{[Your Last Name]}}\email{[your.email]@saranathan.ac.in}
-\affil*[1]{\orgdiv{Department of Computer Science and Engineering}, \orgname{Saranathan College of Engineering}, \orgaddress{\city{Tiruchirappalli}, \state{Tamil Nadu}, \country{India}}}
+\author*[1]{\fnm{Ragul} \sur{K}}\email{278081@saranathan.ac.in}
+\affil*[1]{\orgdiv{Department of Artificial Intelligence and Data Science}, \orgname{Saranathan College of Engineering}, \orgaddress{\city{Tiruchirappalli}, \state{Tamil Nadu}, \country{India}}}
 
 \abstract{
 Edge deep learning benchmarks predominantly evaluate steady-state throughput after discarding initial warm-up iterations, obscuring the severe pipeline compilation and memory initialization stalls incurred during cold starts. In this study, we present a fine-grained empirical characterization of cold-start versus steady-state inference latency across three heterogeneous compute architectures co-located on a consumer edge platform (Intel Core i5-12450H CPU, integrated Intel UHD Graphics, and discrete NVIDIA GeForce RTX 3050 6GB GPU) using native C++17 ONNX Runtime and DirectML execution providers. Across 160 isolated cold-process trials on SqueezeNet~1.1 and MobileNetV2, we uncover two critical systems phenomena: (1) DirectML shader and graph compilation imposes a cold-start penalty of $288.49\text{ ms}$ to $334.25\text{ ms}$ on integrated graphics and $68.15\text{ ms}$ to $130.43\text{ ms}$ on discrete graphics, compared to just $28.78\text{ ms}$ to $46.48\text{ ms}$ on 4-thread CPU; and (2) for batch-1 depthwise-separable architectures (MobileNetV2), PCIe transfer and kernel-launch dispatch overhead renders discrete GPU steady-state latency ($12.47\text{ ms}$) $4.58\times$ slower than 4-thread CPU execution ($2.72\text{ ms}$). We formalize a closed-form crossover break-even model ($N^*$) and implement an asynchronous C++ dual-session runtime dispatcher that serves initial frames on CPU while compiling GPU pipelines on a background worker thread, gating hardware handoff on $N^* > 0$. Experimental evaluation demonstrates an $85.4\%$ to $89.1\%$ reduction in Time-to-First-Inference ($p = 6.005 \times 10^{-6}$, Mann--Whitney $U$ test) while preventing suboptimal GPU offloading on dispatch-bound models.
@@ -149,6 +149,7 @@ The complete C++17 benchmark harness, asynchronous hybrid dispatcher source code
 
 \bibliography{refs}
 \end{document}
+
 
 
 
