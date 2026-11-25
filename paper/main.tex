@@ -6,7 +6,8 @@
 \usepackage{booktabs}
 \usepackage{algorithm}
 \usepackage{algorithmicx}
-\usepackage{algpseudocode}
+\\usepackage{algpseudocode}
+\\usepackage{url}
 
 \begin{document}
 
@@ -62,7 +63,7 @@ C^{(b)}(N) = T_{\text{cold}}^{(b)} + (N - 1),t_{\text{steady}}^{(b)}.
 GPU execution amortizes its cold-start compilation penalty if and only if $t_{\text{steady}}^{\text{GPU}} < t_{\text{steady}}^{\text{CPU}}$, yielding the exact break-even frame threshold $N^*$:
 \begin{equation}
 N^* = \begin{cases}
-\left\lceil \dfrac{T_{\text{cold}}^{\text{GPU}} - T_{\text{cold}}^{\text{CPU}}}{t_{\text{steady}}^{\text{CPU}} - t_{\text{steady}}^{\text{GPU}}} \right\rceil + 1, & \text{if } t_{\text{steady}}^{\text{GPU}} < t_{\text{steady}}^{\text{CPU}}, \[10pt]
+\left\lceil \dfrac{T_{\text{cold}}^{\text{GPU}} - T_{\text{cold}}^{\text{CPU}}}{t_{\text{steady}}^{\text{CPU}} - t_{\text{steady}}^{\text{GPU}}} \right\rceil + 1, & \text{if } t_{\text{steady}}^{\text{GPU}} < t_{\text{steady}}^{\text{CPU}}, \\[10pt]
 -1, & \text{otherwise (never crosses over)}.
 \end{cases}
 \end{equation}
@@ -80,19 +81,19 @@ Table~\ref{tab:coldstart} and Figure~\ref{fig:breakdown} summarize the median, I
 \caption{Cold-start initialization, first inference, steady-state median/$p_{95}$, and cold-start gap across 20 trials per configuration (all times in milliseconds).}\label{tab:coldstart}
 \begin{tabular}{@{}llrrrrrr@{}}
 \toprule
-Model & Backend & $T_{\text{create}}$ (IQR) & $T_{\text{first}}$ & $T_{\text{cold}}$ & $t_{\text{steady}}$ & $t_{p95}$ & Cold Gap \
+Model & Backend & $T_{\text{create}}$ (IQR) & $T_{\text{first}}$ & $T_{\text{cold}}$ & $t_{\text{steady}}$ & $t_{p95}$ & Cold Gap \\
 \midrule
-\multirow{4}{}{SqueezeNet 1.1}
-& CPU (1T)        & 23.74 (1.53) & 9.16 & 32.91 & 7.95 & 9.71 & 24.77 \
-& CPU (4T)        & 24.79 (1.66) & 3.98 & \textbf{28.78} & 2.37 & 2.51 & 26.50 \
-& Intel UHD (iGPU)& 285.83 (12.17)& 2.66 & 288.49 & \textbf{1.03} & \textbf{1.16} & 287.55 \
-& RTX 3050 (dGPU) & 62.96 (10.84)& 5.19 & 68.15 & 3.89 & 4.16 & 64.32 \
+\multirow{4}{*}{SqueezeNet 1.1}
+& CPU (1T)        & 23.74 (1.53) & 9.16 & 32.91 & 7.95 & 9.71 & 24.77 \\
+& CPU (4T)        & 24.79 (1.66) & 3.98 & \textbf{28.78} & 2.37 & 2.51 & 26.50 \\
+& Intel UHD (iGPU)& 285.83 (12.17)& 2.66 & 288.49 & \textbf{1.03} & \textbf{1.16} & 287.55 \\
+& RTX 3050 (dGPU) & 62.96 (10.84)& 5.19 & 68.15 & 3.89 & 4.16 & 64.32 \\
 \midrule
-\multirow{4}{}{MobileNetV2}
-& CPU (1T)        & 41.07 (4.13) & 9.32 & 50.39 & 8.66 & 10.74 & 41.47 \
-& CPU (4T)        & 42.66 (2.84) & 3.82 & \textbf{46.48} & \textbf{2.72} & \textbf{2.90} & 43.73 \
-& Intel UHD (iGPU)& 96.42 (7.24) & 237.83 & 334.25 & 4.07 & 4.72 & 331.61 \
-& RTX 3050 (dGPU) & 85.72 (10.21)& 44.71 & 130.43 & 12.47 & 13.35 & 118.75 \
+\multirow{4}{*}{MobileNetV2}
+& CPU (1T)        & 41.07 (4.13) & 9.32 & 50.39 & 8.66 & 10.74 & 41.47 \\
+& CPU (4T)        & 42.66 (2.84) & 3.82 & \textbf{46.48} & \textbf{2.72} & \textbf{2.90} & 43.73 \\
+& Intel UHD (iGPU)& 96.42 (7.24) & 237.83 & 334.25 & 4.07 & 4.72 & 331.61 \\
+& RTX 3050 (dGPU) & 85.72 (10.21)& 44.71 & 130.43 & 12.47 & 13.35 & 118.75 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -118,15 +119,15 @@ Applying Equation~(2) to our empirical medians yields a crossover threshold of $
 \caption{Asynchronous Hybrid Dispatcher performance across 800-frame streams (10 trials per configuration, median values).}\label{tab:hybrid}
 \begin{tabular}{@{}llrrrrrr@{}}
 \toprule
-Model & Target GPU & Hybrid TTFI & Switch Frame & BG Init & CPU Phase & GPU Phase & 800-Frame Wall \
+Model & Target GPU & Hybrid TTFI & Switch Frame & BG Init & CPU Phase & GPU Phase & 800-Frame Wall \\
 \midrule
-\multirow{2}{}{SqueezeNet 1.1}
-& Intel UHD (DML-1) & \textbf{31.31 ms} & 448 & 1391.09 ms & 2.91 ms & \textbf{0.92 ms} & \textbf{1724.60 ms} \
-& RTX 3050 (DML-0)  & \textbf{32.03 ms} & 46  & 173.03 ms  & 2.90 ms & 3.85 ms & 3076.35 ms \
+\multirow{2}{*}{SqueezeNet 1.1}
+& Intel UHD (DML-1) & \textbf{31.31 ms} & 448 & 1391.09 ms & 2.91 ms & \textbf{0.92 ms} & \textbf{1724.60 ms} \\
+& RTX 3050 (DML-0)  & \textbf{32.03 ms} & 46  & 173.03 ms  & 2.90 ms & 3.85 ms & 3076.35 ms \\
 \midrule
-\multirow{2}{}{MobileNetV2}
-& Intel UHD (DML-1) & \textbf{48.79 ms} & 421 & 1417.44 ms & 3.19 ms & 4.04 ms & 2902.11 ms \
-& RTX 3050 (DML-0)  & \textbf{51.74 ms} & 58  & 244.73 ms  & 3.13 ms & 12.46 ms & 9515.14 ms \
+\multirow{2}{*}{MobileNetV2}
+& Intel UHD (DML-1) & \textbf{48.79 ms} & 421 & 1417.44 ms & 3.19 ms & 4.04 ms & 2902.11 ms \\
+& RTX 3050 (DML-0)  & \textbf{51.74 ms} & 58  & 244.73 ms  & 3.13 ms & 12.46 ms & 9515.14 ms \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -143,8 +144,12 @@ As shown in Figure~\ref{fig:ttfi} and Table~\ref{tab:hybrid}, background thread 
 \end{itemize}
 \section{Conclusion}
 We demonstrated that DirectML pipeline compilation creates substantial cold-start stalls ($68.15\text{ ms}$ to $334.25\text{ ms}$) that frequently outweigh steady-state GPU speedups on lightweight edge vision models. By pairing an analytical crossover break-even model ($N^*$) with an asynchronous C++ CPU-to-GPU warm-up dispatcher, our approach reduces Time-to-First-Inference by up to $89.1\%$ ($p = 6.005 \times 10^{-6}$) while preventing performance degradation from suboptimal discrete GPU offloading.
+\section*{Data and Code Availability}
+The complete C++17 benchmark harness, asynchronous hybrid dispatcher source code, randomized experiment scripts, raw telemetry datasets (160 baseline trials and 40 hybrid trials), and figure generation scripts are publicly available at \url{https://github.com/ragulk143/ort-directml-coldstart}.
+
 \bibliography{refs}
 \end{document}
+
 
 
 
