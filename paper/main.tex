@@ -1,0 +1,148 @@
+﻿\documentclass[sn-mathphys,Numbered]{sn-jnl}
+
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+
+\begin{document}
+
+\title[Cold-Start vs. Steady-State Inference on Heterogeneous Edge Hardware]{Where Does the Time Go? Cold-Start Pipeline Compilation vs. Steady-State Latency of Vision Models Across CPU, Integrated GPU, and Discrete GPU Execution Providers}
+
+\author*[1]{\fnm{Ragul} \sur{[Your Last Name]}}\email{[your.email]@saranathan.ac.in}
+\affil*[1]{\orgdiv{Department of Computer Science and Engineering}, \orgname{Saranathan College of Engineering}, \orgaddress{\city{Tiruchirappalli}, \state{Tamil Nadu}, \country{India}}}
+
+\abstract{
+Edge deep learning benchmarks predominantly evaluate steady-state throughput after discarding initial warm-up iterations, obscuring the severe pipeline compilation and memory initialization stalls incurred during cold starts. In this study, we present a fine-grained empirical characterization of cold-start versus steady-state inference latency across three heterogeneous compute architectures co-located on a consumer edge platform (Intel Core i5-12450H CPU, integrated Intel UHD Graphics, and discrete NVIDIA GeForce RTX 3050 6GB GPU) using native C++17 ONNX Runtime and DirectML execution providers. Across 160 isolated cold-process trials on SqueezeNet~1.1 and MobileNetV2, we uncover two critical systems phenomena: (1) DirectML shader and graph compilation imposes a cold-start penalty of $288.49\text{ ms}$ to $334.25\text{ ms}$ on integrated graphics and $68.15\text{ ms}$ to $130.43\text{ ms}$ on discrete graphics, compared to just $28.78\text{ ms}$ to $46.48\text{ ms}$ on 4-thread CPU; and (2) for batch-1 depthwise-separable architectures (MobileNetV2), PCIe transfer and kernel-launch dispatch overhead renders discrete GPU steady-state latency ($12.47\text{ ms}$) $4.58\times$ slower than 4-thread CPU execution ($2.72\text{ ms}$). We formalize a closed-form crossover break-even model ($N^*$) and implement an asynchronous C++ dual-session runtime dispatcher that serves initial frames on CPU while compiling GPU pipelines on a background worker thread, gating hardware handoff on $N^* > 0$. Experimental evaluation demonstrates an $85.4\%$ to $89.1\%$ reduction in Time-to-First-Inference ($p = 6.005 \times 10^{-6}$, Mann--Whitney $U$ test) while preventing suboptimal GPU offloading on dispatch-bound models.
+}
+
+\keywords{Edge Inference \and Cold-Start Latency \and DirectML \and Heterogeneous Computing \and ONNX Runtime \and CPU--GPU Scheduling}
+
+\maketitle
+
+\section{Introduction}
+Deploying deep neural networks (DNNs) directly onto client and edge hardware has become standard practice for low-latency computer vision, privacy-preserving analytics, and offline inference \cite{wu2019machine}. Modern consumer laptops and edge workstations integrate three distinct compute engines on a single platform: multi-core hybrid CPUs, unified-memory integrated GPUs (iGPUs), and discrete GPUs (dGPUs) connected over PCI Express \cite{chen2023heterogeneous}. To target all three backends without vendor lock-in, practitioners rely on hardware-abstracted runtimes such as ONNX Runtime paired with Microsoft DirectML \cite{onnxruntime2024}.
+
+However, standard benchmarking methodologies systematically discard initial "warm-up" runs, reporting only steady-state frame latency. In real-world interactive applications, serverless edge workers, and short-lived vision bursts, the user experiences the full \emph{cold-start} pipeline: model deserialization, graph optimization, DirectML compute-shader compilation, and device buffer allocation. When shader compilation stalls execution for hundreds of milliseconds, a GPU with superior steady-state throughput may actually deliver worse total completion time than a CPU for sessions shorter than a critical break-even frame count $N^*$.
+
+In this paper, we systematically decompose end-to-end inference latency into session initialization, cold first inference, and steady-state execution across CPU, iGPU, and dGPU backends. Our primary contributions are:
+\begin{enumerate}
+    \item \textbf{Multi-Backend Cold-Start Characterization:} Across 160 isolated process trials on SqueezeNet~1.1 \cite{iandola2016squeezenet} and MobileNetV2 \cite{sandler2018mobilenetv2}, we quantify the exact cold-start gap across 1-thread CPU, 4-thread CPU, Intel UHD iGPU, and NVIDIA RTX 3050 dGPU, revealing that DirectML initialization adds up to $331.61\text{ ms}$ of overhead and that depthwise-separable convolutions suffer severe dispatch bottlenecks on discrete GPUs.
+    \item \textbf{Closed-Form Crossover Model ($N^*$):} We derive an analytical break-even equation predicting the exact frame threshold $N^*$ required for GPU acceleration to amortize its compilation cost over CPU execution, showing that SqueezeNet~1.1 crosses over at $N^* = 195$ frames on Intel UHD iGPU, whereas MobileNetV2 never crosses over ($N^* = -1$) at batch size 1.
+    \item \textbf{Crossover-Gated Asynchronous Hybrid Dispatcher:} We implement a lightweight C++17 runtime scheduler that executes initial frames immediately on CPU while compiling DirectML pipelines asynchronously on a background thread, reducing Time-to-First-Inference (TTFI) by up to $89.1\%$ ($288.49\text{ ms} \rightarrow 31.31\text{ ms}$, $p = 6.005 \times 10^{-6}$).
+\end{enumerate}
+
+\section{Methodology and Experimental Setup}
+
+\subsection{Hardware and Software Environment}
+All experiments were executed on an Infinix GT Book workstation configured in Windows High-Performance AC power mode with background updates and synchronization services disabled to eliminate OS scheduling jitter:
+\begin{itemize}
+    \item \textbf{CPU:} Intel Core i5-12450H (8 cores: 4 Performance-cores + 4 Efficiency-cores, 12 threads, AVX2).
+    \item \textbf{Discrete GPU (DML Device 0):} NVIDIA GeForce RTX 3050 6GB Laptop GPU (Driver \texttt{32.0.15.8142}).
+    \item \textbf{Integrated GPU (DML Device 1):} Intel(R) UHD Graphics (Driver \texttt{31.0.101.4887}, unified system memory).
+    \item \textbf{Runtime \& Compiler:} Native C++17 harness compiled with MinGW-W64 \texttt{g++ 16.2.0} (\texttt{-O3}) linked directly against ONNX Runtime C API \texttt{v1.20.1} with DirectML Execution Provider.
+\end{itemize}
+
+\subsection{Workload Selection and Isolation Protocol}
+We evaluate two canonical lightweight vision architectures with contrasting operator topologies using deterministic fixed-seed input tensors ($1 \times 3 \times 224 \times 224$, FP32):
+\begin{itemize}
+    \item \textbf{SqueezeNet 1.1} ($4.73\text{ MB}$) \cite{iandola2016squeezenet}: Dominated by dense $1\times 1$ and $3\times 3$ standard convolutions (\emph{Fire} modules) with high arithmetic intensity per kernel launch.
+    \item \textbf{MobileNetV2} ($13.32\text{ MB}$) \cite{sandler2018mobilenetv2}: Dominated by inverted residual blocks with depthwise-separable $3\times 3$ convolutions, generating a high count of memory-bound, fine-grained DirectML compute dispatches.
+\end{itemize}
+To guarantee true cold starts and prevent intra-process memory or shader caching, each trial spawns an independent OS child process (\texttt{bench.exe}), executes one session creation ($T_{\text{create}}$), one cold first inference ($T_{\text{first}}$), and $100$ warm steady-state iterations ($T_{\text{steady}}$). We execute $20$ randomized trials per configuration ($160$ total baseline trials) with a $2\text{ s}$ thermal cooldown between runs, verifying numerical equivalence across all backends via output tensor checksums. Because latency distributions exhibit right-skewed tail behavior, we report medians, interquartile ranges (IQR), and 95th percentiles ($p_{95}$), evaluating statistical significance via the non-parametric Mann--Whitney $U$ test.
+\section{Analytical Crossover Model and Hybrid Dispatcher}
+\subsection{Closed-Form Break-Even Formulation}
+Let $T_{\text{cold}}^{(b)} = T_{\text{create}}^{(b)} + T_{\text{first}}^{(b)}$ denote the cold startup latency to complete frame $1$ on backend $b \in \{\text{CPU}, \text{GPU}\}$, and let $t_{\text{steady}}^{(b)}$ denote the median per-frame latency thereafter. The cumulative wall-clock time to complete $N$ frames ($N \ge 1$) is:
+\begin{equation}
+C^{(b)}(N) = T_{\text{cold}}^{(b)} + (N - 1),t_{\text{steady}}^{(b)}.
+\end{equation}
+GPU execution amortizes its cold-start compilation penalty if and only if $t_{\text{steady}}^{\text{GPU}} < t_{\text{steady}}^{\text{CPU}}$, yielding the exact break-even frame threshold $N^*$:
+\begin{equation}
+N^* = \begin{cases}
+\left\lceil \dfrac{T_{\text{cold}}^{\text{GPU}} - T_{\text{cold}}^{\text{CPU}}}{t_{\text{steady}}^{\text{CPU}} - t_{\text{steady}}^{\text{GPU}}} \right\rceil + 1, & \text{if } t_{\text{steady}}^{\text{GPU}} < t_{\text{steady}}^{\text{CPU}}, \[10pt]
+-1, & \text{otherwise (never crosses over)}.
+\end{cases}
+\end{equation}
+\subsection{Asynchronous Dual-Session Warm-Up Dispatcher}
+To eliminate the cold-start freeze without sacrificing steady-state acceleration when $N^* > 0$, our C++ runtime dispatcher decouples initial inference from DirectML pipeline compilation:
+\begin{enumerate}
+\item At $t=0$, the main thread initializes a 4-thread CPU session ($<43\text{ ms}$) and immediately begins serving incoming frames.
+\item Concurrently, a background \texttt{std::thread} initializes the DirectML GPU session and executes one dummy warm-up inference off the critical path, setting an atomic flag (\texttt{std::atomic}) upon completion.
+\item Once ready, the dispatcher switches subsequent frames to the GPU session if and only if the workload profile satisfies $N^* > 0$.
+\end{enumerate}
+\section{Experimental Results and Discussion}
+\subsection{Cold-Start vs. Steady-State Latency Breakdown}
+Table~\ref{tab:coldstart} and Figure~\ref{fig:breakdown} summarize the median, IQR, and $p_{95}$ latencies across all $160$ baseline trials.
+\begin{table}[h]
+\caption{Cold-start initialization, first inference, steady-state median/$p_{95}$, and cold-start gap across 20 trials per configuration (all times in milliseconds).}\label{tab:coldstart}
+\begin{tabular}{@{}llrrrrrr@{}}
+\toprule
+Model & Backend & $T_{\text{create}}$ (IQR) & $T_{\text{first}}$ & $T_{\text{cold}}$ & $t_{\text{steady}}$ & $t_{p95}$ & Cold Gap \
+\midrule
+\multirow{4}{}{SqueezeNet 1.1}
+& CPU (1T)        & 23.74 (1.53) & 9.16 & 32.91 & 7.95 & 9.71 & 24.77 \
+& CPU (4T)        & 24.79 (1.66) & 3.98 & \textbf{28.78} & 2.37 & 2.51 & 26.50 \
+& Intel UHD (iGPU)& 285.83 (12.17)& 2.66 & 288.49 & \textbf{1.03} & \textbf{1.16} & 287.55 \
+& RTX 3050 (dGPU) & 62.96 (10.84)& 5.19 & 68.15 & 3.89 & 4.16 & 64.32 \
+\midrule
+\multirow{4}{}{MobileNetV2}
+& CPU (1T)        & 41.07 (4.13) & 9.32 & 50.39 & 8.66 & 10.74 & 41.47 \
+& CPU (4T)        & 42.66 (2.84) & 3.82 & \textbf{46.48} & \textbf{2.72} & \textbf{2.90} & 43.73 \
+& Intel UHD (iGPU)& 96.42 (7.24) & 237.83 & 334.25 & 4.07 & 4.72 & 331.61 \
+& RTX 3050 (dGPU) & 85.72 (10.21)& 44.71 & 130.43 & 12.47 & 13.35 & 118.75 \
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig1_coldstart_breakdown.pdf}
+\caption{Comparison of total cold-start latency ($T_{\text{create}} + T_{\text{first}}$) versus steady-state median frame latency ($t_{\text{steady}}$) on a logarithmic scale across CPU, Intel UHD iGPU, and NVIDIA RTX 3050 dGPU.}\label{fig:breakdown}
+\end{figure}
+Three key insights emerge from Table~\ref{tab:coldstart}:
+\begin{itemize}
+\item \textbf{Two-Stage Cold-Start Stall:} On SqueezeNet~1.1, Intel UHD iGPU incurs its penalty during \texttt{CreateSession} ($285.83\text{ ms}$), whereas on MobileNetV2, Intel UHD defers pipeline compilation until the first \texttt{Run()} call ($T_{\text{first}} = 237.83\text{ ms}$), yielding a total cold start of $334.25\text{ ms}$.
+\item \textbf{The Discrete GPU Dispatch Bottleneck:} At batch size 1, the discrete RTX 3050 exhibits slower steady-state latency than 4-thread CPU on both SqueezeNet~1.1 ($3.89\text{ ms}$ vs. $2.37\text{ ms}$) and MobileNetV2 ($12.47\text{ ms}$ vs. $2.72\text{ ms}$). Host-to-device PCIe synchronization across dozens of fragmented depthwise-separable kernels outweighs the RTX 3050's raw FLOP advantage for small tensors.
+\item \textbf{Integrated GPU Advantage on Dense Convolutions:} Because Intel UHD Graphics shares physical DRAM with the CPU, it avoids PCIe copy overhead and reaches $1.03\text{ ms}$ steady-state latency on SqueezeNet~1.1 ($2.30\times$ faster than 4-thread CPU).
+\end{itemize}
+\subsection{Crossover Trajectories and Hybrid Dispatcher Evaluation}
+Applying Equation~(2) to our empirical medians yields a crossover threshold of $N^* = 195$ frames for SqueezeNet~1.1 on Intel UHD iGPU, whereas all other GPU-model pairs yield $N^* = -1$. Figure~\ref{fig:crossover} illustrates the cumulative latency trajectories over $1,000$ frames, and Table~\ref{tab:hybrid} reports the measured performance of our asynchronous hybrid dispatcher across $10$ trials per configuration ($800$-frame streams).
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/fig2_cumulative_crossover.pdf}
+\caption{Cumulative execution time over $1,000$ frames. On SqueezeNet~1.1 (left), Intel UHD crosses below CPU (4T) at $N^* = 195$ frames, while the Hybrid Dispatcher avoids the initial $288.5\text{ ms}$ stall. On MobileNetV2 (right), CPU (4T) dominates all GPU backends across the entire horizon.}\label{fig:crossover}
+\end{figure}
+\begin{table}[h]
+\caption{Asynchronous Hybrid Dispatcher performance across 800-frame streams (10 trials per configuration, median values).}\label{tab:hybrid}
+\begin{tabular}{@{}llrrrrrr@{}}
+\toprule
+Model & Target GPU & Hybrid TTFI & Switch Frame & BG Init & CPU Phase & GPU Phase & 800-Frame Wall \
+\midrule
+\multirow{2}{}{SqueezeNet 1.1}
+& Intel UHD (DML-1) & \textbf{31.31 ms} & 448 & 1391.09 ms & 2.91 ms & \textbf{0.92 ms} & \textbf{1724.60 ms} \
+& RTX 3050 (DML-0)  & \textbf{32.03 ms} & 46  & 173.03 ms  & 2.90 ms & 3.85 ms & 3076.35 ms \
+\midrule
+\multirow{2}{}{MobileNetV2}
+& Intel UHD (DML-1) & \textbf{48.79 ms} & 421 & 1417.44 ms & 3.19 ms & 4.04 ms & 2902.11 ms \
+& RTX 3050 (DML-0)  & \textbf{51.74 ms} & 58  & 244.73 ms  & 3.13 ms & 12.46 ms & 9515.14 ms \
+\bottomrule
+\end{tabular}
+\end{table}
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig3_hybrid_ttfi_comparison.pdf}
+\caption{Time-to-First-Inference (TTFI) reduction achieved by the proposed Asynchronous Hybrid Dispatcher compared to cold DirectML initialization ($p = 6.005 \times 10^{-6}$ across all pairs).}\label{fig:ttfi}
+\end{figure}
+As shown in Figure~\ref{fig:ttfi} and Table~\ref{tab:hybrid}, background thread contention increases per-frame CPU latency only modestly during compilation ($2.37\text{ ms} \rightarrow 2.91\text{ ms}$ on SqueezeNet~1.1), while slashing TTFI from $288.49\text{ ms}$ down to $31.31\text{ ms}$ ($89.1%$ reduction, Mann--Whitney $U = 200.0$, $p = 6.005 \times 10^{-6}$). Furthermore, comparing the unconstrained switch rows in Table~\ref{tab:hybrid} proves why gating handoff on $N^* > 0$ is essential: switching unconditionally to the RTX 3050 on MobileNetV2 inflates 800-frame completion time to $9,515.14\text{ ms}$, whereas gating on $N^* > 0$ retains execution on 4-thread CPU ($2,222.88\text{ ms}$).
+\section{Threats to Validity}
+\begin{itemize}
+\item \textbf{Batch Size and Operator Scope:} Our experiments evaluate batch-1 FP32 vision inference; larger batch sizes ($B \ge 8$) or transformer architectures with heavier matrix multiplications amortize PCIe dispatch overhead differently on discrete GPUs.
+\item \textbf{Single-Platform Evaluation:} Measurements were collected on a single hybrid laptop (Intel i5-12450H + Intel UHD + RTX 3050). While exact $N^*$ values vary across driver versions and PCIe generations, our closed-form crossover model and asynchronous warm-up architecture generalize directly to any heterogeneous client.
+\end{itemize}
+\section{Conclusion}
+We demonstrated that DirectML pipeline compilation creates substantial cold-start stalls ($68.15\text{ ms}$ to $334.25\text{ ms}$) that frequently outweigh steady-state GPU speedups on lightweight edge vision models. By pairing an analytical crossover break-even model ($N^*$) with an asynchronous C++ CPU-to-GPU warm-up dispatcher, our approach reduces Time-to-First-Inference by up to $89.1%$ ($p = 6.005 \times 10^{-6}$) while preventing performance degradation from suboptimal discrete GPU offloading.
+\bibliography{refs}
+\end{document}
+

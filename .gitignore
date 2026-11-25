@@ -1,0 +1,5 @@
+﻿*.exe
+*.dll
+*.onnx
+ort/
+__pycache__/
