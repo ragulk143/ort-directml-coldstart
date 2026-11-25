@@ -135,14 +135,15 @@ Model & Target GPU & Hybrid TTFI & Switch Frame & BG Init & CPU Phase & GPU Phas
 \includegraphics[width=0.85\textwidth]{figures/fig3_hybrid_ttfi_comparison.pdf}
 \caption{Time-to-First-Inference (TTFI) reduction achieved by the proposed Asynchronous Hybrid Dispatcher compared to cold DirectML initialization ($p = 6.005 \times 10^{-6}$ across all pairs).}\label{fig:ttfi}
 \end{figure}
-As shown in Figure~\ref{fig:ttfi} and Table~\ref{tab:hybrid}, background thread contention increases per-frame CPU latency only modestly during compilation ($2.37\text{ ms} \rightarrow 2.91\text{ ms}$ on SqueezeNet~1.1), while slashing TTFI from $288.49\text{ ms}$ down to $31.31\text{ ms}$ ($89.1%$ reduction, Mann--Whitney $U = 200.0$, $p = 6.005 \times 10^{-6}$). Furthermore, comparing the unconstrained switch rows in Table~\ref{tab:hybrid} proves why gating handoff on $N^* > 0$ is essential: switching unconditionally to the RTX 3050 on MobileNetV2 inflates 800-frame completion time to $9,515.14\text{ ms}$, whereas gating on $N^* > 0$ retains execution on 4-thread CPU ($2,222.88\text{ ms}$).
+As shown in Figure~\ref{fig:ttfi} and Table~\ref{tab:hybrid}, background thread contention increases per-frame CPU latency only modestly during compilation ($2.37\text{ ms} \rightarrow 2.91\text{ ms}$ on SqueezeNet~1.1), while slashing TTFI from $288.49\text{ ms}$ down to $31.31\text{ ms}$ ($89.1\%$ reduction, Mann--Whitney $U = 200.0$, $p = 6.005 \times 10^{-6}$). Furthermore, comparing the unconstrained switch rows in Table~\ref{tab:hybrid} proves why gating handoff on $N^* > 0$ is essential: switching unconditionally to the RTX 3050 on MobileNetV2 inflates 800-frame completion time to $9,515.14\text{ ms}$, whereas gating on $N^* > 0$ retains execution on 4-thread CPU ($2,222.88\text{ ms}$).
 \section{Threats to Validity}
 \begin{itemize}
 \item \textbf{Batch Size and Operator Scope:} Our experiments evaluate batch-1 FP32 vision inference; larger batch sizes ($B \ge 8$) or transformer architectures with heavier matrix multiplications amortize PCIe dispatch overhead differently on discrete GPUs.
 \item \textbf{Single-Platform Evaluation:} Measurements were collected on a single hybrid laptop (Intel i5-12450H + Intel UHD + RTX 3050). While exact $N^*$ values vary across driver versions and PCIe generations, our closed-form crossover model and asynchronous warm-up architecture generalize directly to any heterogeneous client.
 \end{itemize}
 \section{Conclusion}
-We demonstrated that DirectML pipeline compilation creates substantial cold-start stalls ($68.15\text{ ms}$ to $334.25\text{ ms}$) that frequently outweigh steady-state GPU speedups on lightweight edge vision models. By pairing an analytical crossover break-even model ($N^*$) with an asynchronous C++ CPU-to-GPU warm-up dispatcher, our approach reduces Time-to-First-Inference by up to $89.1%$ ($p = 6.005 \times 10^{-6}$) while preventing performance degradation from suboptimal discrete GPU offloading.
+We demonstrated that DirectML pipeline compilation creates substantial cold-start stalls ($68.15\text{ ms}$ to $334.25\text{ ms}$) that frequently outweigh steady-state GPU speedups on lightweight edge vision models. By pairing an analytical crossover break-even model ($N^*$) with an asynchronous C++ CPU-to-GPU warm-up dispatcher, our approach reduces Time-to-First-Inference by up to $89.1\%$ ($p = 6.005 \times 10^{-6}$) while preventing performance degradation from suboptimal discrete GPU offloading.
 \bibliography{refs}
 \end{document}
+
 
