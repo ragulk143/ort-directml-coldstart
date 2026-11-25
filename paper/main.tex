@@ -1,4 +1,4 @@
-﻿\documentclass[sn-mathphys,Numbered]{sn-jnl}
+\documentclass[pdflatex,sn-mathphys-num]{sn-jnl}
 
 \usepackage{graphicx}
 \usepackage{multirow}
@@ -11,12 +11,13 @@
 \title[Cold-Start and Steady-State Inference on Heterogeneous Hardware]{Where Does the Time Go? An Empirical Study of Cold-Start and Steady-State Inference Latency Across CPU, Integrated GPU, and Discrete GPU Execution Providers}
 
 \author*[1]{\fnm{Ragul} \sur{K}}
-\email{278081@saranathan.ac.in}
+% Verify the corresponding-author email before submission.
+\email{aid278081@saranathan.ac.in}
 
 \affil*[1]{\orgdiv{Department of Artificial Intelligence and Data Science}, \orgname{Saranathan College of Engineering}, \orgaddress{\city{Tiruchirappalli}, \state{Tamil Nadu}, \country{India}}}
 
 \abstract{
-Inference benchmarks commonly emphasize steady-state latency while giving less attention to the time required to initialize an inference session and complete its first execution. This distinction is important for short-lived and interactive edge workloads, where initialization overhead can dominate total execution time. We present an empirical characterization of cold-start and steady-state inference latency across CPU, integrated GPU, and discrete GPU execution providers on a consumer laptop using native C++17, ONNX Runtime 1.20.1, and DirectML. We evaluate SqueezeNet 1.1 and MobileNetV2 using 160 isolated benchmark trials. The results show substantial backend-dependent cold-start costs. For example, the measured cold-start total for SqueezeNet is 28.78 ms on a four-thread CPU and 288.49 ms on the NVIDIA RTX 3050, whereas the corresponding steady-state medians are 2.372 ms and 1.035 ms. We derive a workload-length break-even model and estimate that the RTX 3050 requires 196 completed SqueezeNet frames to compensate for its higher cold-start cost under the measured median-latency model. No GPU configuration crosses over against the four-thread CPU for MobileNetV2. We also examine an asynchronous CPU--GPU dispatcher through two separate 40-trial datasets. The dispatcher results expose the importance of correct backend-specific performance calibration and are reported as diagnostic evidence rather than as a demonstrated speedup. These findings show why cold-start and steady-state measurements should be considered together when selecting execution providers for edge inference.
+Inference benchmarks often emphasize steady-state latency, although session initialization and first inference can dominate short edge workloads. We characterize cold-start and steady-state latency across CPU, integrated GPU, and discrete GPU execution providers on one consumer laptop using C++17, ONNX Runtime 1.20.1, and DirectML. SqueezeNet 1.1 and MobileNetV2 were evaluated in 160 isolated baseline trials. For SqueezeNet, the four-thread CPU had a cold-start total of 28.78 ms and a steady-state median of 2.372 ms; the RTX 3050 measured 288.49 ms and 1.035 ms, respectively. A median-based model estimates a break-even point of 196 frames for the RTX 3050. Neither GPU crossed over against the four-thread CPU for MobileNetV2. Two separate 40-trial dispatcher datasets are discussed as diagnostic evaluations and do not establish a speedup. These results illustrate why workload duration and cold-start costs should accompany steady-state latency when comparing execution providers.
 }
 
 \keywords{Edge Inference \and Cold-Start Latency \and DirectML \and Heterogeneous Computing \and ONNX Runtime \and GPU Scheduling}
@@ -31,7 +32,7 @@ Many inference benchmarks emphasize steady-state execution by measuring repeated
 
 This distinction is particularly relevant to edge applications that process a finite number of frames before terminating or becoming idle. A discrete GPU may provide faster repeated inference but incur a substantial initial cost. A CPU may therefore remain preferable for short workloads even when its steady-state latency is higher.
 
-This paper investigates the relationship between cold-start and steady-state inference latency across CPU, integrated GPU (iGPU), and discrete GPU (dGPU) execution providers on a consumer laptop. We use SqueezeNet 1.1 \cite{iandola2016squeezenet} and MobileNetV2 \cite{sandler2018mobilenetv2} as representative lightweight vision workloads.
+This paper examines cold-start and steady-state inference latency across CPU, integrated GPU (iGPU), and discrete GPU (dGPU) execution providers on a consumer laptop. We evaluate SqueezeNet 1.1 \cite{iandola2016squeezenet} and MobileNetV2 \cite{sandler2018mobilenetv2} as representative lightweight vision workloads.
 
 The contributions are as follows:
 
@@ -40,7 +41,7 @@ The contributions are as follows:
 
     \item \textbf{Workload-length break-even model:} We formulate a closed-form model that estimates the minimum number of inference frames required for a GPU backend to compensate for its additional cold-start cost relative to CPU execution.
 
-    \item \textbf{Dispatcher implementation and diagnostic evaluation:} We implement an asynchronous CPU--GPU execution dispatcher in C++17 and evaluate its behavior using two separate 40-trial datasets. The results demonstrate the practical importance of correct backend-specific latency estimates and identify limitations that must be addressed before claiming a scheduling benefit.
+    \item \textbf{Dispatcher implementation and diagnostic evaluation:} We implement an asynchronous CPU--GPU execution dispatcher in C++17 and evaluate its behavior using two separate 40-trial datasets. The results highlight the importance of correct backend-specific latency estimates and identify limitations that must be addressed before claiming a scheduling benefit.
 \end{enumerate}
 
 \section{Methodology and Experimental Setup}
@@ -177,25 +178,25 @@ This threshold is an analytical estimate derived from measured medians. It does 
 Table~\ref{tab:coldstart} presents the baseline measurements across 160 trials. All latency values are in milliseconds.
 
 \begin{table}[ht]
-\caption{Baseline cold-start and steady-state measurements. Session creation is reported as median (IQR). Other columns report medians.}
+\caption{Baseline cold-start and steady-state measurements. Session creation is reported as median (IQR). Other columns report medians. All latency values are in milliseconds.}
 \label{tab:coldstart}
 \centering
 \small
-\begin{tabular}{@{}llrrrrrr@{}}
+\begin{tabular}{@{}llrrrrr@{}}
 \toprule
-Model & Backend & Create (IQR) & First & Cold & Steady & $p_{95}$ & Gap \\
+Model & Backend & Create (IQR) & First & Cold & Steady & $p_{95}$ \\
 \midrule
 \multirow{4}{*}{SqueezeNet 1.1}
-& CPU (1T) & 23.75 (1.53) & 9.16 & 32.91 & 7.95 & 9.71 & 24.77 \\
-& CPU (4T) & 24.79 (1.66) & 3.98 & 28.78 & 2.37 & 2.51 & 26.50 \\
-& Intel UHD & 62.96 (10.84) & 5.19 & 68.15 & 3.89 & 4.16 & 64.32 \\
-& RTX 3050 & 285.83 (12.17) & 2.66 & 288.49 & 1.03 & 1.16 & 287.55 \\
+& CPU (1T) & 23.75 (1.53) & 9.16 & 32.91 & 7.95 & 9.71 \\
+& CPU (4T) & 24.79 (1.66) & 3.98 & 28.78 & 2.37 & 2.51 \\
+& Intel UHD & 62.96 (10.84) & 5.19 & 68.15 & 3.89 & 4.16 \\
+& RTX 3050 & 285.83 (12.17) & 2.66 & 288.49 & 1.03 & 1.16 \\
 \midrule
 \multirow{4}{*}{MobileNetV2}
-& CPU (1T) & 41.07 (4.13) & 9.32 & 50.39 & 8.66 & 10.74 & 41.47 \\
-& CPU (4T) & 42.66 (2.84) & 3.82 & 46.48 & 2.72 & 2.90 & 43.73 \\
-& Intel UHD & 85.72 (10.21) & 44.71 & 130.43 & 12.47 & 13.35 & 118.75 \\
-& RTX 3050 & 96.42 (7.24) & 237.83 & 334.25 & 4.07 & 4.72 & 331.61 \\
+& CPU (1T) & 41.07 (4.13) & 9.32 & 50.39 & 8.66 & 10.74 \\
+& CPU (4T) & 42.66 (2.84) & 3.82 & 46.48 & 2.72 & 2.90 \\
+& Intel UHD & 85.72 (10.21) & 44.71 & 130.43 & 12.47 & 13.35 \\
+& RTX 3050 & 96.42 (7.24) & 237.83 & 334.25 & 4.07 & 4.72 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -212,7 +213,7 @@ Figure~\ref{fig:breakdown} compares cold-start totals with steady-state median l
 Three observations emerge from the baseline measurements.
 
 \begin{enumerate}
-    \item \textbf{Backend-dependent initialization cost:} SqueezeNet on the RTX 3050 has a cold-start total of 288.49 ms, despite a steady-state median of only 1.035 ms. For MobileNetV2 on the RTX 3050, the cold-start total is 334.25 ms, with 237.83 ms spent in the first inference. The measurements show that initialization and first-execution costs are distinct and model-dependent.
+    \item \textbf{Backend-dependent initialization cost:} SqueezeNet on the RTX 3050 has a cold-start total of 288.49 ms, despite a steady-state median of 1.035 ms. For MobileNetV2 on the RTX 3050, the cold-start total is 334.25 ms, with 237.83 ms spent in the first inference. The measurements show that initialization and first-execution costs are distinct and model-dependent.
 
     \item \textbf{Steady-state backend differences:} For SqueezeNet, the RTX 3050 achieves a steady-state median of 1.035 ms, compared with 2.372 ms on the four-thread CPU. Intel UHD achieves 3.889 ms. For MobileNetV2, the four-thread CPU is faster than both GPU configurations: 2.724 ms compared with 4.074 ms on the RTX 3050 and 12.471 ms on Intel UHD.
 
@@ -268,7 +269,7 @@ The subsequent 40-trial experiment is summarized in Table~\ref{tab:dispatcher}. 
 \label{tab:dispatcher}
 \centering
 \small
-\begin{tabular}{@{}llrrrrl@{}}
+\begin{tabular}{@{}llrrrrrl@{}}
 \toprule
 Model & GPU & TTFI & Switch & GPU Init & CPU Phase & GPU Phase & Decision \\
 \midrule
@@ -319,13 +320,13 @@ The results should be interpreted in light of the following limitations:
 
 \section{Conclusion}
 
-This study characterized cold-start and steady-state inference latency across CPU, integrated GPU, and discrete GPU execution providers on a consumer laptop. Across 160 isolated baseline trials, the measurements showed that session creation and first-inference costs can substantially change the relative performance of execution backends.
+This study examined cold-start and steady-state inference latency across CPU, integrated GPU, and discrete GPU execution providers on a consumer laptop. Across 160 isolated baseline trials, session creation and first-inference costs substantially influenced the relative performance of the tested backends.
 
-For SqueezeNet 1.1, the RTX 3050 achieved a steady-state median of 1.035 ms compared with 2.372 ms on CPU (4T), but its cold-start total was 288.49 ms compared with 28.78 ms on CPU. A median-based analytical model estimated that 196 frames are required for the RTX 3050 to become faster in cumulative completion time. For MobileNetV2, neither GPU configuration achieved a lower steady-state median than CPU (4T), and no crossover was predicted.
+For SqueezeNet 1.1, the RTX 3050 achieved a steady-state median of 1.035 ms, compared with 2.372 ms on the four-thread CPU. However, its cold-start total was 288.49 ms, compared with 28.78 ms on the CPU. A median-based analytical model estimated a break-even point of 196 frames. For MobileNetV2, neither GPU configuration achieved a lower steady-state median than the four-thread CPU, and no crossover was predicted.
 
-The asynchronous dispatcher experiments further highlighted the importance of accurate backend-specific calibration. The subsequent experiment exposed an inverted device-to-estimate mapping that caused an unprofitable GPU selection. We therefore do not claim a dispatcher speedup from these measurements.
+The dispatcher experiments highlighted the importance of accurate backend-specific calibration. The subsequent experiment revealed an inverted device-to-estimate mapping that led to an unprofitable GPU selection. These results are diagnostic and do not establish a dispatcher speedup.
 
-Overall, the results demonstrate that reporting steady-state inference latency alone can provide an incomplete picture of edge inference performance. Cold-start costs, workload length, model architecture, and correct hardware identification should all be considered when selecting an execution backend.
+Overall, the findings indicate that steady-state latency alone may not adequately characterize edge inference performance. Cold-start cost, workload length, model characteristics, and correct hardware identification should also be considered when comparing execution providers.
 
 \section*{Data and Code Availability}
 
