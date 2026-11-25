@@ -1,198 +1,419 @@
-﻿import os
+﻿from pathlib import Path
+import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import mannwhitneyu
+
+ROOT = Path(__file__).resolve().parent.parent
+RESULTS = ROOT / "results"
+PROCESSED = RESULTS / "processed"
+FIGURES = ROOT / "paper" / "figures"
+
+PROCESSED.mkdir(parents=True, exist_ok=True)
+FIGURES.mkdir(parents=True, exist_ok=True)
 
 plt.rcParams.update({
     "font.family": "serif",
-    "font.size": 10,
-    "axes.labelsize": 10,
-    "axes.titlesize": 11,
-    "legend.fontsize": 8.5,
-    "xtick.labelsize": 9,
-    "ytick.labelsize": 9,
-    "figure.dpi": 300
+    "font.size": 9,
+    "axes.labelsize": 9,
+    "axes.titlesize": 10,
+    "legend.fontsize": 7.5,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "figure.dpi": 300,
 })
 
-cold = pd.read_csv("results/coldstart_raw.csv")
-hyb = pd.read_csv("results/hybrid_raw.csv")
+# DirectML adapter enumeration:
+# 0 = Intel UHD Graphics
+# 1 = NVIDIA GeForce RTX 3050 6GB Laptop GPU
+DEVICE_NAMES = {
+    0: "Intel UHD",
+    1: "RTX 3050",
+}
 
-def label_backend(row):
-    if row["ep"] == "cpu":
-        return f"CPU ({int(row['param'])}T)"
-    return "RTX 3050 (DML-0)" if int(row["param"]) == 0 else "Intel UHD (DML-1)"
+def model_label(path):
+    name = str(path).lower()
+    if "squeeze" in name:
+        return "SqueezeNet 1.1"
+    if "mobilenet" in name:
+        return "MobileNetV2"
+    return Path(name).name
 
-cold["backend"] = cold.apply(label_backend, axis=1)
-cold["model_name"] = cold["model"].apply(lambda s: "SqueezeNet 1.1" if "squeeze" in s else "MobileNetV2")
-hyb["model_name"] = hyb["model"].apply(lambda s: "SqueezeNet 1.1" if "squeeze" in s else "MobileNetV2")
-hyb["gpu_name"] = hyb["gpu_device"].apply(lambda d: "RTX 3050 (DML-0)" if int(d) == 0 else "Intel UHD (DML-1)")
+def device_label(device):
+    device = int(device)
+    return DEVICE_NAMES.get(device, f"Unknown DML device {device}")
 
-# 1. Summary statistics (Median, IQR, p95)
-summary = cold.groupby(["model_name", "backend"]).agg(
-    n_trials=("trial", "count"),
-    create_med=("session_create_ms", "median"),
-    create_iqr=("session_create_ms", lambda x: np.percentile(x, 75) - np.percentile(x, 25)),
-    first_med=("first_inf_ms", "median"),
-    steady_med=("steady_median_ms", "median"),
-    steady_p95=("steady_p95_ms", "median"),
-    gap_med=("cold_gap_ms", "median"),
-    gap_iqr=("cold_gap_ms", lambda x: np.percentile(x, 75) - np.percentile(x, 25)),
-).reset_index()
+def median_iqr(series):
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return np.nan, np.nan
+    return (
+        float(values.median()),
+        float(values.quantile(0.75) - values.quantile(0.25)),
+    )
 
-summary["cold_total_ms"] = summary["create_med"] + summary["first_med"]
-summary.to_csv("results/processed/coldstart_summary.csv", index=False)
+def require_file(path):
+    if not path.exists():
+        raise FileNotFoundError(f"Required dataset not found: {path}")
+    return pd.read_csv(path)
 
-hyb_summary = hyb.groupby(["model_name", "gpu_name"]).agg(
-    n_trials=("trial", "count"),
-    ttfi_med=("ttfi_ms", "median"),
-    ttfi_iqr=("ttfi_ms", lambda x: np.percentile(x, 75) - np.percentile(x, 25)),
-    switch_frame_med=("switch_frame", "median"),
-    bg_init_med=("bg_gpu_init_ms", "median"),
-    cpu_phase_med=("cpu_phase_med_ms", "median"),
-    gpu_phase_med=("gpu_phase_med_ms", "median"),
-    p95_med=("overall_p95_ms", "median"),
-    wall_800_med=("total_wall_ms", "median"),
-).reset_index()
-hyb_summary.to_csv("results/processed/hybrid_summary.csv", index=False)
+# ---------------------------------------------------------------------
+# Load the three datasets independently. Never combine their rows.
+# ---------------------------------------------------------------------
+cold = require_file(RESULTS / "coldstart_raw.csv")
+old_hybrid = require_file(RESULTS / "hybrid_raw.csv")
+dispatcher = require_file(RESULTS / "hybrid_crossover_raw.csv")
 
-print("=== TABLE 1: COLD-START vs STEADY-STATE SUMMARY ===")
-print(summary.to_string(index=False))
-print("\n=== TABLE 2: HYBRID DISPATCHER SUMMARY (800 FRAMES) ===")
-print(hyb_summary.to_string(index=False))
+cold["model_name"] = cold["model"].apply(model_label)
+cold["backend"] = cold.apply(
+    lambda r: f"CPU ({int(r['param'])}T)"
+    if r["ep"] == "cpu"
+    else f"{device_label(r['param'])} (DML-{int(r['param'])})",
+    axis=1,
+)
 
-# 2. Compute exact crossover frame counts N* vs CPU (4T)
-print("\n=== CROSSOVER BREAK-EVEN ANALYSIS (vs CPU 4T) ===")
+old_hybrid["model_name"] = old_hybrid["model"].apply(model_label)
+old_hybrid["gpu_name"] = old_hybrid["gpu_device"].apply(device_label)
+
+dispatcher["model_name"] = dispatcher["model"].apply(model_label)
+dispatcher["gpu_name"] = dispatcher["gpu_device"].apply(device_label)
+
+# ---------------------------------------------------------------------
+# 1. Baseline cold-start summary
+# ---------------------------------------------------------------------
+cold_rows = []
+
+for (model, backend), group in cold.groupby(["model_name", "backend"]):
+    create_med, create_iqr = median_iqr(group["session_create_ms"])
+    first_med, first_iqr = median_iqr(group["first_inf_ms"])
+    steady_med, steady_iqr = median_iqr(group["steady_median_ms"])
+    p95_med, _ = median_iqr(group["steady_p95_ms"])
+    gap_med, gap_iqr = median_iqr(group["cold_gap_ms"])
+
+    cold_rows.append({
+        "model": model,
+        "backend": backend,
+        "n_trials": len(group),
+        "create_median_ms": create_med,
+        "create_iqr_ms": create_iqr,
+        "first_inference_median_ms": first_med,
+        "first_inference_iqr_ms": first_iqr,
+        "cold_total_ms": create_med + first_med,
+        "steady_median_ms": steady_med,
+        "steady_median_iqr_ms": steady_iqr,
+        "steady_p95_median_ms": p95_med,
+        "cold_gap_median_ms": gap_med,
+        "cold_gap_iqr_ms": gap_iqr,
+    })
+
+summary = pd.DataFrame(cold_rows)
+summary.to_csv(PROCESSED / "coldstart_summary.csv", index=False)
+
+# ---------------------------------------------------------------------
+# 2. Historical hybrid summary (kept separate from the new dispatcher)
+# ---------------------------------------------------------------------
+old_rows = []
+
+for (model, gpu), group in old_hybrid.groupby(["model_name", "gpu_name"]):
+    ttfi_med, ttfi_iqr = median_iqr(group["ttfi_ms"])
+    switch_med, _ = median_iqr(group["switch_frame"])
+    init_med, _ = median_iqr(group["bg_gpu_init_ms"])
+    cpu_med, _ = median_iqr(group["cpu_phase_med_ms"])
+    gpu_med, _ = median_iqr(group["gpu_phase_med_ms"])
+    wall_med, _ = median_iqr(group["total_wall_ms"])
+
+    old_rows.append({
+        "model": model,
+        "gpu": gpu,
+        "n_trials": len(group),
+        "ttfi_median_ms": ttfi_med,
+        "ttfi_iqr_ms": ttfi_iqr,
+        "switch_frame_median": switch_med,
+        "gpu_init_median_ms": init_med,
+        "cpu_phase_median_ms": cpu_med,
+        "gpu_phase_median_ms": gpu_med,
+        "total_wall_median_ms": wall_med,
+    })
+
+old_summary = pd.DataFrame(old_rows)
+old_summary.to_csv(PROCESSED / "old_hybrid_summary.csv", index=False)
+
+# ---------------------------------------------------------------------
+# 3. Corrected dispatcher summary (kept separate)
+# ---------------------------------------------------------------------
+dispatcher_rows = []
+
+for (model, gpu, decision), group in dispatcher.groupby(
+    ["model_name", "gpu_name", "decision"]
+):
+    ttfi_med, ttfi_iqr = median_iqr(group["ttfi_ms"])
+    switch_med, _ = median_iqr(group["switch_frame"])
+    init_med, _ = median_iqr(group["bg_gpu_init_ms"])
+    cpu_med, _ = median_iqr(group["cpu_phase_med_ms"])
+    gpu_med, _ = median_iqr(group["gpu_phase_med_ms"])
+    workload_med, _ = median_iqr(group["workload_wall_ms"])
+    process_med, _ = median_iqr(group["process_wall_ms"])
+
+    dispatcher_rows.append({
+        "model": model,
+        "gpu": gpu,
+        "decision": decision,
+        "n_trials": len(group),
+        "ttfi_median_ms": ttfi_med,
+        "ttfi_iqr_ms": ttfi_iqr,
+        "switch_frame_median": switch_med,
+        "gpu_init_median_ms": init_med,
+        "cpu_phase_median_ms": cpu_med,
+        "gpu_phase_median_ms": gpu_med,
+        "workload_wall_median_ms": workload_med,
+        "process_wall_median_ms": process_med,
+    })
+
+dispatcher_summary = pd.DataFrame(dispatcher_rows)
+dispatcher_summary.to_csv(
+    PROCESSED / "dispatcher_summary.csv", index=False
+)
+
+# ---------------------------------------------------------------------
+# 4. Strict break-even calculation against CPU (4 threads)
+#
+# GPU wins when:
+# G_cold + (N - 1) * G_step < C_cold + (N - 1) * C_step
+#
+# If G_step < C_step, the smallest integer N satisfying the strict
+# inequality is floor((G_cold - C_cold)/(C_step - G_step)) + 2.
+# ---------------------------------------------------------------------
+print("\n=== BASELINE COLD-START SUMMARY ===")
+print(summary.round(4).to_string(index=False))
+
+print("\n=== HISTORICAL HYBRID SUMMARY (SEPARATE DATASET) ===")
+print(old_summary.round(4).to_string(index=False))
+
+print("\n=== CORRECTED DISPATCHER SUMMARY (SEPARATE DATASET) ===")
+print(dispatcher_summary.round(4).to_string(index=False))
+
+print("\n=== STRICT BREAK-EVEN ANALYSIS VS CPU (4T) ===")
+
 crossover_rows = []
-for m in ["SqueezeNet 1.1", "MobileNetV2"]:
-    sub = summary[summary["model_name"] == m].set_index("backend")
-    c_cold = sub.loc["CPU (4T)", "cold_total_ms"]
-    c_step = sub.loc["CPU (4T)", "steady_med"]
-    for gpu in ["RTX 3050 (DML-0)", "Intel UHD (DML-1)"]:
-        g_cold = sub.loc[gpu, "cold_total_ms"]
-        g_step = sub.loc[gpu, "steady_med"]
-        if c_step > g_step:
-            n_star = int(np.ceil((g_cold - c_cold) / (c_step - g_step)))
+
+for model in ["SqueezeNet 1.1", "MobileNetV2"]:
+    sub = summary[summary["model"] == model].set_index("backend")
+    cpu_key = "CPU (4T)"
+
+    if cpu_key not in sub.index:
+        raise ValueError(f"Missing {cpu_key} baseline for {model}")
+
+    cpu_cold = float(sub.loc[cpu_key, "cold_total_ms"])
+    cpu_step = float(sub.loc[cpu_key, "steady_median_ms"])
+
+    for device in [0, 1]:
+        gpu_name = device_label(device)
+        gpu_key = f"{gpu_name} (DML-{device})"
+
+        if gpu_key not in sub.index:
+            raise ValueError(f"Missing {gpu_key} baseline for {model}")
+
+        gpu_cold = float(sub.loc[gpu_key, "cold_total_ms"])
+        gpu_step = float(sub.loc[gpu_key, "steady_median_ms"])
+
+        if gpu_step >= cpu_step:
+            frames_to_win = None
+            result = "No crossover: GPU steady-state is not faster"
         else:
-            n_star = -1  # Never crosses over
-        print(f"{m} | {gpu}: Cold={g_cold:.1f}ms, Steady={g_step:.3f}ms vs CPU(4T) Cold={c_cold:.1f}ms, Steady={c_step:.3f}ms => N* = {n_star}")
-        crossover_rows.append({"model": m, "gpu": gpu, "n_star": n_star})
+            ratio = (gpu_cold - cpu_cold) / (cpu_step - gpu_step)
+            frames_to_win = max(1, math.floor(ratio) + 2)
+            result = f"{frames_to_win} frames"
 
-        # Mann-Whitney U test on TTFI: Pure Cold GPU vs Hybrid Dispatcher
-        raw_gpu = cold[(cold["model_name"] == m) & (cold["backend"] == gpu)]
-        raw_gpu_ttfi = raw_gpu["session_create_ms"] + raw_gpu["first_inf_ms"]
-        raw_hyb_ttfi = hyb[(hyb["model_name"] == m) & (hyb["gpu_name"] == gpu)]["ttfi_ms"]
-        stat, pval = mannwhitneyu(raw_gpu_ttfi, raw_hyb_ttfi, alternative="greater")
-        print(f"   Mann-Whitney U (Cold GPU TTFI > Hybrid TTFI): U={stat:.1f}, p={pval:.3e}")
+        crossover_rows.append({
+            "model": model,
+            "gpu": gpu_name,
+            "cpu_cold_ms": cpu_cold,
+            "gpu_cold_ms": gpu_cold,
+            "cpu_steady_ms": cpu_step,
+            "gpu_steady_ms": gpu_step,
+            "break_even_frames": frames_to_win,
+            "result": result,
+        })
 
-# 3. Figure 1: Cold-Start Breakdown (Log-scale grouped bars)
+        print(
+            f"{model} | {gpu_name}: "
+            f"CPU cold={cpu_cold:.3f} ms, GPU cold={gpu_cold:.3f} ms, "
+            f"CPU steady={cpu_step:.4f} ms, GPU steady={gpu_step:.4f} ms "
+            f"=> {result}"
+        )
+
+crossover = pd.DataFrame(crossover_rows)
+crossover.to_csv(PROCESSED / "crossover_summary.csv", index=False)
+
+# ---------------------------------------------------------------------
+# 5. Figure 1: Baseline cold-start versus steady-state
+# ---------------------------------------------------------------------
+backend_order = [
+    "CPU (1T)",
+    "CPU (4T)",
+    "Intel UHD (DML-0)",
+    "RTX 3050 (DML-1)",
+]
+
 fig, axes = plt.subplots(1, 2, figsize=(9.5, 3.8), sharey=True)
-order = ["CPU (1T)", "CPU (4T)", "Intel UHD (DML-1)", "RTX 3050 (DML-0)"]
-colors = ["#4e79a7", "#59a14f", "#f28e2b", "#e15759"]
 
-for ax, m in zip(axes, ["SqueezeNet 1.1", "MobileNetV2"]):
-    sub = summary[summary["model_name"] == m].set_index("backend").reindex(order)
-    x = np.arange(len(order))
-    b1 = ax.bar(x - 0.18, sub["cold_total_ms"], width=0.34, label="Cold Start (Init + Frame 1)", color="#2b5c8f")
-    b2 = ax.bar(x + 0.18, sub["steady_med"], width=0.34, label="Steady-State Median", color="#f28e2b")
+for ax, model in zip(axes, ["SqueezeNet 1.1", "MobileNetV2"]):
+    sub = (
+        summary[summary["model"] == model]
+        .set_index("backend")
+        .reindex(backend_order)
+    )
+
+    x = np.arange(len(backend_order))
+    cold_bars = ax.bar(
+        x - 0.18, sub["cold_total_ms"], width=0.34,
+        label="Cold total (init + first inference)"
+    )
+    steady_bars = ax.bar(
+        x + 0.18, sub["steady_median_ms"], width=0.34,
+        label="Steady-state median"
+    )
+
     ax.set_yscale("log")
     ax.set_xticks(x)
-    ax.set_xticklabels(["CPU\n(1T)", "CPU\n(4T)", "Intel\niGPU", "RTX\n3050"])
-    ax.set_title(m)
-    ax.grid(axis="y", linestyle="--", alpha=0.4)
-    for bar in b1:
-        h = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2, h * 1.15, f"{h:.0f}", ha="center", va="bottom", fontsize=7.5)
-    for bar in b2:
-        h = bar.get_height()
-        ax.text(bar.get_x() + bar.get_width()/2, h * 1.15, f"{h:.2f}", ha="center", va="bottom", fontsize=7.5)
+    ax.set_xticklabels(["CPU\n1T", "CPU\n4T", "Intel\niGPU", "RTX\n3050"])
+    ax.set_title(model)
+    ax.grid(axis="y", linestyle="--", alpha=0.35)
 
-axes[0].set_ylabel("Latency (ms, log scale)")
+    for bars, fmt in [(cold_bars, "{:.1f}"), (steady_bars, "{:.2f}")]:
+        for bar in bars:
+            height = bar.get_height()
+            if pd.notna(height) and height > 0:
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2,
+                    height * 1.10,
+                    fmt.format(height),
+                    ha="center", va="bottom", fontsize=7,
+                )
+
+axes[0].set_ylabel("Latency (ms, logarithmic scale)")
 axes[1].legend(loc="upper left")
-plt.tight_layout()
-plt.savefig("paper/figures/fig1_coldstart_breakdown.pdf")
-plt.savefig("paper/figures/fig1_coldstart_breakdown.png")
-plt.close()
+fig.tight_layout()
+fig.savefig(FIGURES / "fig1_coldstart_breakdown.pdf", bbox_inches="tight")
+fig.savefig(FIGURES / "fig1_coldstart_breakdown.png", bbox_inches="tight")
+plt.close(fig)
 
-# 4. Figure 2: Cumulative Latency Crossover & Hybrid Trajectory
-fig, axes = plt.subplots(1, 2, figsize=(9.5, 3.8))
+# ---------------------------------------------------------------------
+# 6. Figure 2: Baseline cumulative latency model only.
+#    It is a model derived from measured medians, not a dispatcher trace.
+# ---------------------------------------------------------------------
 frames = np.arange(1, 1001)
+fig, axes = plt.subplots(1, 2, figsize=(9.5, 3.8))
 
-for ax, m in zip(axes, ["SqueezeNet 1.1", "MobileNetV2"]):
-    sub = summary[summary["model_name"] == m].set_index("backend")
-    hsub = hyb_summary[hyb_summary["model_name"] == m].set_index("gpu_name")
+line_specs = [
+    ("CPU (4T)", "--"),
+    ("Intel UHD (DML-0)", "-."),
+    ("RTX 3050 (DML-1)", ":"),
+]
 
-    for backend, style, col in [
-        ("CPU (4T)", "--", "#2ca02c"),
-        ("Intel UHD (DML-1)", "-.", "#ff7f0e"),
-        ("RTX 3050 (DML-0)", ":", "#d62728")
-    ]:
-        c0 = sub.loc[backend, "cold_total_ms"]
-        dt = sub.loc[backend, "steady_med"]
-        cum = c0 + (frames - 1) * dt
-        ax.plot(frames, cum / 1000.0, linestyle=style, color=col, linewidth=1.8, label=backend)
+for ax, model in zip(axes, ["SqueezeNet 1.1", "MobileNetV2"]):
+    sub = summary[summary["model"] == model].set_index("backend")
 
-    # Hybrid trajectory using Intel UHD (fast switch) or RTX 3050
-    for gpu, col in [("Intel UHD (DML-1)", "#1f77b4"), ("RTX 3050 (DML-0)", "#9467bd")]:
-        sw = int(hsub.loc[gpu, "switch_frame_med"])
-        ttfi = hsub.loc[gpu, "ttfi_med"]
-        c_dt = hsub.loc[gpu, "cpu_phase_med"]
-        g_dt = hsub.loc[gpu, "gpu_phase_med"]
-        cum_h = []
-        t_acc = ttfi
-        for f in frames:
-            if f == 1:
-                cum_h.append(t_acc)
-            elif f <= sw:
-                t_acc += c_dt
-                cum_h.append(t_acc)
-            else:
-                t_acc += g_dt
-                cum_h.append(t_acc)
-        ax.plot(frames, np.array(cum_h) / 1000.0, color=col, linewidth=2.0, label=f"Hybrid ({gpu.split()[0]})")
+    for backend, linestyle in line_specs:
+        cold_ms = float(sub.loc[backend, "cold_total_ms"])
+        step_ms = float(sub.loc[backend, "steady_median_ms"])
+        cumulative_ms = cold_ms + (frames - 1) * step_ms
 
-    ax.set_title(m)
-    ax.set_xlabel("Completed Inference Frames (N)")
-    ax.grid(True, linestyle="--", alpha=0.4)
+        ax.plot(
+            frames, cumulative_ms / 1000.0,
+            linestyle=linestyle, linewidth=1.8,
+            label=backend,
+        )
 
-axes[0].set_ylabel("Cumulative Wall Time (seconds)")
+    model_cross = crossover[
+        (crossover["model"] == model)
+        & crossover["break_even_frames"].notna()
+    ]
+
+    for _, row in model_cross.iterrows():
+        n = int(row["break_even_frames"])
+        if n <= 1000:
+            ax.axvline(n, color="grey", linestyle=":", linewidth=1)
+            ax.annotate(
+                f"{row['gpu']} break-even: {n} frames",
+                xy=(n, 0.92), xycoords=("data", "axes fraction"),
+                xytext=(5, -3), textcoords="offset points",
+                fontsize=7, rotation=90, va="top",
+            )
+
+    ax.set_title(model)
+    ax.set_xlabel("Completed inference frames")
+    ax.grid(True, linestyle="--", alpha=0.35)
+
+axes[0].set_ylabel("Cumulative modeled time (seconds)")
 axes[0].legend(loc="upper left")
-plt.tight_layout()
-plt.savefig("paper/figures/fig2_cumulative_crossover.pdf")
-plt.savefig("paper/figures/fig2_cumulative_crossover.png")
-plt.close()
+fig.tight_layout()
+fig.savefig(FIGURES / "fig2_cumulative_crossover.pdf", bbox_inches="tight")
+fig.savefig(FIGURES / "fig2_cumulative_crossover.png", bbox_inches="tight")
+plt.close(fig)
 
-# 5. Figure 3: TTFI Reduction (Cold GPU vs Hybrid Dispatcher)
-fig, ax = plt.subplots(figsize=(6.8, 3.6))
-categories = ["SqueezeNet\n(Intel iGPU)", "SqueezeNet\n(RTX 3050)", "MobileNetV2\n(Intel iGPU)", "MobileNetV2\n(RTX 3050)"]
-cold_vals = []
-hyb_vals = []
-for m in ["SqueezeNet 1.1", "MobileNetV2"]:
-    sub = summary[summary["model_name"] == m].set_index("backend")
-    hsub = hyb_summary[hyb_summary["model_name"] == m].set_index("gpu_name")
-    for gpu in ["Intel UHD (DML-1)", "RTX 3050 (DML-0)"]:
-        cold_vals.append(sub.loc[gpu, "cold_total_ms"])
-        hyb_vals.append(hsub.loc[gpu, "ttfi_med"])
+# ---------------------------------------------------------------------
+# 7. Figure 3: Corrected dispatcher diagnostics.
+#    Panel A: observed TTFI, annotated with actual decision.
+#    Panel B: CPU/GPU phase medians for configurations with GPU timings.
+# ---------------------------------------------------------------------
+fig, axes = plt.subplots(1, 2, figsize=(10, 3.8))
 
-x = np.arange(len(categories))
-b1 = ax.bar(x - 0.18, cold_vals, width=0.34, label="Pure Cold DirectML (TTFI)", color="#d62728")
-b2 = ax.bar(x + 0.18, hyb_vals, width=0.34, label="Proposed Hybrid Dispatcher (TTFI)", color="#1f77b4")
-ax.set_yscale("log")
-ax.set_xticks(x)
-ax.set_xticklabels(categories)
-ax.set_ylabel("Time-to-First-Inference (ms, log scale)")
-ax.set_title("Eliminating Cold-Start Stalls via Asynchronous CPU-to-GPU Warm-Up")
-ax.grid(axis="y", linestyle="--", alpha=0.4)
-for bar in b1:
-    h = bar.get_height()
-    ax.text(bar.get_x() + bar.get_width()/2, h * 1.15, f"{h:.0f} ms", ha="center", va="bottom", fontsize=7.5)
-for bar in b2:
-    h = bar.get_height()
-    ax.text(bar.get_x() + bar.get_width()/2, h * 1.15, f"{h:.1f} ms", ha="center", va="bottom", fontsize=7.5)
-ax.legend()
-plt.tight_layout()
-plt.savefig("paper/figures/fig3_hybrid_ttfi_comparison.pdf")
-plt.savefig("paper/figures/fig3_hybrid_ttfi_comparison.png")
-plt.close()
+plot_data = dispatcher_summary.copy()
+plot_data["configuration"] = (
+    plot_data["model"].str.replace(" 1.1", "", regex=False)
+    + "\n" + plot_data["gpu"]
+)
 
-print("\nFIGURES SAVED TO paper/figures/ successfully!")
+x = np.arange(len(plot_data))
+bars = axes[0].bar(x, plot_data["ttfi_median_ms"])
+axes[0].set_xticks(x)
+axes[0].set_xticklabels(plot_data["configuration"], rotation=0)
+axes[0].set_ylabel("TTFI (ms)")
+axes[0].set_title("Corrected dispatcher: observed TTFI")
+axes[0].grid(axis="y", linestyle="--", alpha=0.35)
+
+for bar, (_, row) in zip(bars, plot_data.iterrows()):
+    axes[0].text(
+        bar.get_x() + bar.get_width() / 2,
+        bar.get_height() * 1.03,
+        str(row["decision"]).replace("_", "\n"),
+        ha="center", va="bottom", fontsize=6.5,
+    )
+
+selected = dispatcher_summary[
+    dispatcher_summary["gpu_phase_median_ms"].notna()
+].copy()
+
+if not selected.empty:
+    labels = selected["model"].str.replace(" 1.1", "", regex=False) + "\n" + selected["gpu"]
+    xx = np.arange(len(selected))
+    axes[1].bar(
+        xx - 0.18, selected["cpu_phase_median_ms"],
+        width=0.34, label="CPU phase",
+    )
+    axes[1].bar(
+        xx + 0.18, selected["gpu_phase_median_ms"],
+        width=0.34, label="GPU phase",
+    )
+    axes[1].set_xticks(xx)
+    axes[1].set_xticklabels(labels)
+    axes[1].legend()
+else:
+    axes[1].text(
+        0.5, 0.5, "No GPU phase timings recorded",
+        ha="center", va="center", transform=axes[1].transAxes,
+    )
+
+axes[1].set_ylabel("Per-frame phase median (ms)")
+axes[1].set_title("Configurations with GPU execution")
+axes[1].grid(axis="y", linestyle="--", alpha=0.35)
+
+fig.tight_layout()
+fig.savefig(FIGURES / "fig3_hybrid_ttfi_comparison.pdf", bbox_inches="tight")
+fig.savefig(FIGURES / "fig3_hybrid_ttfi_comparison.png", bbox_inches="tight")
+plt.close(fig)
+
+print("\nSaved processed summaries to:", PROCESSED)
+print("Regenerated figures in:", FIGURES)
+print("\nAnalysis completed. Raw CSV datasets were not modified.")

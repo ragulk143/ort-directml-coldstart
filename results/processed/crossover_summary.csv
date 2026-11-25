@@ -1,0 +1,5 @@
+model,gpu,cpu_cold_ms,gpu_cold_ms,cpu_steady_ms,gpu_steady_ms,break_even_frames,result
+SqueezeNet 1.1,Intel UHD,28.776249999999997,68.1506,2.37235,3.8886000000000003,,No crossover: GPU steady-state is not faster
+SqueezeNet 1.1,RTX 3050,28.776249999999997,288.4922,2.37235,1.0348000000000002,196.0,196 frames
+MobileNetV2,Intel UHD,46.4836,130.4259,2.7239,12.47115,,No crossover: GPU steady-state is not faster
+MobileNetV2,RTX 3050,46.4836,334.25104999999996,2.7239,4.0737000000000005,,No crossover: GPU steady-state is not faster
